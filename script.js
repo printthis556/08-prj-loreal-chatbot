@@ -2,6 +2,8 @@
 const chatForm = document.getElementById("chatForm");
 const userInput = document.getElementById("userInput");
 const chatWindow = document.getElementById("chatWindow");
+// Use the deployed Cloudflare Worker as a proxy to keep the OpenAI API key server-side
+const WORKER_URL = "https://loreal-chatbot-worker.mhess0308.workers.dev";
 // System prompt: strictly enforce scope to L'Oréal and beauty-related topics.
 // When recommending a product, include a full product URL or a markdown-style link like: [Product Name](https://...)
 // If a question is outside that scope, politely refuse and offer a related alternative.
@@ -15,7 +17,11 @@ function appendMessage(role, text) {
   // role label (e.g. "You" or "L'Oréal Advisor")
   const label = document.createElement("div");
   label.className = "role-label";
-  label.textContent = role === "user" ? "You" : "L'Oréal Advisor";
+  // If the role is user and we have a stored name, show it instead of "You"
+  const storedName =
+    localStorage.getItem("chat_user_name") || chatUserName || "";
+  label.textContent =
+    role === "user" ? (storedName ? storedName : "You") : "L'Oréal Advisor";
 
   const bubble = document.createElement("div");
   bubble.className = "bubble";
@@ -33,7 +39,7 @@ function appendMessage(role, text) {
 // Conversation memory (keeps user+assistant messages). We send the system prompt
 // separately with every API call so it's always applied. To avoid hitting token
 // limits we trim to the last N messages (user+assistant entries).
-const conversation = [];
+let conversation = [];
 const MAX_HISTORY_MESSAGES = 12; // keeps the last 12 messages (adjust as needed)
 
 function getMessagesForAPI() {
@@ -41,8 +47,73 @@ function getMessagesForAPI() {
   const start = Math.max(0, conversation.length - MAX_HISTORY_MESSAGES);
   const recent = conversation.slice(start);
   // Always include the system prompt first
-  return [{ role: "system", content: SYSTEM_PROMPT }, ...recent];
+  const userName = localStorage.getItem("chat_user_name");
+  const userMeta = userName
+    ? [{ role: "system", content: `User name: ${userName}` }]
+    : [];
+  return [{ role: "system", content: SYSTEM_PROMPT }, ...userMeta, ...recent];
 }
+
+function saveConversation() {
+  try {
+    localStorage.setItem("chat_conversation", JSON.stringify(conversation));
+  } catch (err) {
+    console.warn("Could not save conversation", err);
+  }
+}
+
+function loadConversation() {
+  try {
+    const raw = localStorage.getItem("chat_conversation");
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (err) {
+    console.warn("Could not load conversation", err);
+    return null;
+  }
+}
+
+// Prompt for user name once (if not known) to personalize the chat.
+let chatUserName = localStorage.getItem("chat_user_name") || "";
+// Track stored user name and whether we're currently awaiting the name via chat
+let awaitingName = false;
+const prior = loadConversation();
+if (prior && Array.isArray(prior) && prior.length) {
+  conversation = prior;
+  // render messages
+  chatWindow.innerHTML = "";
+  for (const msg of conversation) {
+    appendMessage(msg.role === "assistant" ? "assistant" : "user", msg.content);
+    // After rendering past messages, update user labels to show stored name if any
+    updateUserLabels();
+  }
+  // If we have no stored name yet, ask for it in-chat
+  if (!chatUserName) {
+    const ask =
+      "Before we continue — may I ask your name? (optional, type it here)";
+    appendMessage("assistant", ask);
+    conversation.push({ role: "assistant", content: ask });
+    saveConversation();
+    awaitingName = true;
+  }
+} else {
+  // initial assistant greeting — if we don't know name, ask for it conversationally
+  if (!chatUserName) {
+    const greet =
+      "👋 Hi — I'm the L'Oréal Advisor. What's your name? (optional — type it here)";
+    appendMessage("assistant", greet);
+    conversation.push({ role: "assistant", content: greet });
+    awaitingName = true;
+  } else {
+    const greet =
+      "👋 Hi — I can help with L’Oréal product advice, routines, and recommendations. Ask me about products, ingredients, or routine steps.";
+    appendMessage("assistant", greet);
+    conversation.push({ role: "assistant", content: greet });
+  }
+  saveConversation();
+}
+
+// (prior conversation already handled above)
 
 // Render text into a bubble element, converting markdown links and raw URLs to safe anchors.
 function renderTextWithLinks(bubble, text) {
@@ -130,18 +201,16 @@ function escapeRegExp(string) {
   return string.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&");
 }
 
-/* initial assistant greeting */
-appendMessage(
-  "assistant",
-  "👋 Hi — I can help with L’Oréal product advice, routines, and recommendations. Ask me about products, ingredients, or routine steps."
-);
+// Update existing user role labels in the DOM to show the stored name (if any)
+function updateUserLabels() {
+  const name = localStorage.getItem("chat_user_name") || chatUserName || "";
+  const labels = chatWindow.querySelectorAll(".message.user .role-label");
+  labels.forEach((el) => {
+    el.textContent = name ? name : "You";
+  });
+}
 
-// store the initial assistant greeting in conversation memory
-conversation.push({
-  role: "assistant",
-  content:
-    "👋 Hi — I can help with L’Oréal product advice, routines, and recommendations. Ask me about products, ingredients, or routine steps.",
-});
+// (initial greeting handled during load)
 
 /* Handle form submit */
 chatForm.addEventListener("submit", async (e) => {
@@ -150,10 +219,104 @@ chatForm.addEventListener("submit", async (e) => {
   const text = userInput.value.trim();
   if (!text) return;
 
+  // Special command: //reset -> clear conversation and reset chat UI (keeps stored name)
+  if (text === "//reset") {
+    // clear in-memory and persisted conversation
+    conversation = [];
+    saveConversation();
+
+    // Also clear stored user name (remove persistence)
+    chatUserName = null;
+    try {
+      localStorage.removeItem("chat_user_name");
+    } catch (e) {
+      // ignore storage errors
+    }
+    if (typeof updateUserLabels === "function") updateUserLabels();
+
+    // clear UI
+    chatWindow.innerHTML = "";
+
+    // re-initialize greeting depending on whether name is known
+    if (chatUserName) {
+      const greet = `👋 Hi ${chatUserName} — I can help with L’Oréal product advice, routines, and recommendations. Ask me about products, ingredients, or routine steps.`;
+      appendMessage("assistant", greet);
+      conversation.push({ role: "assistant", content: greet });
+    } else {
+      const greet =
+        "👋 Hi — I'm the L'Oréal Advisor. What's your name? (optional — type it here)";
+      appendMessage("assistant", greet);
+      conversation.push({ role: "assistant", content: greet });
+      awaitingName = true;
+    }
+
+    saveConversation();
+    userInput.value = "";
+    return;
+  }
+
   // store and show user message
   conversation.push({ role: "user", content: text });
   appendMessage("user", text);
+  // (latest-question UI removed) — user message is shown in chat window only
   userInput.value = "";
+  const sendBtn = document.getElementById("sendBtn");
+
+  // Allow the user to set/change their name at any time with phrases like "My name is Alice" or "I'm Bob"
+  const generalNameMatch = text.match(/^(?:my name is|i am|i'm)\s+(.+)$/i);
+  if (generalNameMatch) {
+    const name = generalNameMatch[1].trim();
+    if (name) {
+      chatUserName = name.slice(0, 50);
+      localStorage.setItem("chat_user_name", chatUserName);
+      const confirm = `Nice to meet you, ${chatUserName}! How can I help you with L'Oréal products today?`;
+      conversation.push({ role: "assistant", content: confirm });
+      appendMessage("assistant", confirm);
+      updateUserLabels();
+      saveConversation();
+      return; // don't send the name message to the API
+    }
+  }
+
+  // If we're awaiting the user's name, treat this message as the name (or skip)
+  if (awaitingName) {
+    const candidate = text.trim();
+    // allow user to skip
+    if (/^(skip|no|no thanks|no thank you)$/i.test(candidate)) {
+      awaitingName = false;
+      saveConversation();
+      userInput.disabled = false;
+      if (sendBtn) sendBtn.disabled = false;
+      userInput.focus();
+      return;
+    }
+
+    // Extract name from phrases like "My name is Alice" or accept short inputs like "Alice"
+    let name = "";
+    const m = candidate.match(/^(?:my name is|i am|i'm)\s+(.+)$/i);
+    if (m) name = m[1].trim();
+    else {
+      const parts = candidate.split(/\s+/);
+      if (parts.length <= 3) name = candidate;
+    }
+
+    if (name) {
+      chatUserName = name.slice(0, 50);
+      localStorage.setItem("chat_user_name", chatUserName);
+      const confirm = `Nice to meet you, ${chatUserName}! How can I help you with L'Oréal products today?`;
+      conversation.push({ role: "assistant", content: confirm });
+      appendMessage("assistant", confirm);
+      updateUserLabels();
+      awaitingName = false;
+      saveConversation();
+      // do not call API for the name-only message
+      userInput.disabled = false;
+      if (sendBtn) sendBtn.disabled = false;
+      userInput.focus();
+      return;
+    }
+    // else fall through and treat message as a normal query
+  }
 
   // show loading indicator
   const loadingId = "loading-" + Date.now();
@@ -164,25 +327,19 @@ chatForm.addEventListener("submit", async (e) => {
 
   // disable input while waiting
   userInput.disabled = true;
-  const sendBtn = document.getElementById("sendBtn");
   if (sendBtn) sendBtn.disabled = true;
 
   try {
     // Build messages array including recent conversation history and the system prompt
     const messages = getMessagesForAPI();
 
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    // Send messages to the Cloudflare Worker which proxies requests to OpenAI with the secret key
+    const res = await fetch(`${WORKER_URL}/chat`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${openaiApiKey}`,
       },
-      body: JSON.stringify({
-        model: "gpt-4o",
-        messages,
-        temperature: 0.2,
-        max_tokens: 800,
-      }),
+      body: JSON.stringify({ messages }),
     });
 
     if (!res.ok) {
@@ -202,10 +359,13 @@ chatForm.addEventListener("submit", async (e) => {
 
     // add assistant reply to conversation memory
     conversation.push({ role: "assistant", content: assistantText });
+    saveConversation();
 
     // replace loading text with actual assistant message (rendering will convert links)
     if (loadingElem) renderTextWithLinks(loadingElem, assistantText);
     else appendMessage("assistant", assistantText);
+    // clear latest question after assistant replies? (keep shown until next question)
+    // we choose to keep the latest question visible until the next user input.
   } catch (err) {
     console.error("Chat error", err);
     const message =

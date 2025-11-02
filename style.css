@@ -22,12 +22,15 @@ body {
 .site-header {
   text-align: center;
   padding-top: 50px;
+  font: Bauer Bodoni W02 Bold;
 }
 
 .site-title {
   font-size: 22px;
   font-weight: 500;
   margin-bottom: 10px;
+  margin-top: 20px;
+  font-family: "Bauer Bodoni W02 Bold", "Bauer Bodoni", "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 
 /* chat window */
@@ -47,15 +50,78 @@ body {
 }
 
 /* messages */
-.msg {
+.message {
   margin-bottom: 14px;
-  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
+.message .role-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #333;
+  /* Use Halesworth eText Bold for role labels when available */
+  font-family: "Halesworth eText Bold", "Halesworth", "Helvetica Neue",
+    Helvetica, Arial, sans-serif;
+}
+
+.message.user {
+  align-items: flex-end;
+}
+
+.message.assistant {
+  align-items: flex-start;
+}
+
+.bubble {
+  max-width: 85%;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 16px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+.message.user .bubble {
+  background: #000;
+  color: #fff;
+  border-bottom-right-radius: 2px;
+}
+
+.message.assistant .bubble {
+  background: #fff;
+  color: #222;
+  border: 1px solid #e0e0e0;
+  /* Use Helvetica Now Display W05 Reg for assistant replies when available. */
+  font-family: "Helvetica Now Display W05 Reg", "Helvetica Now Display",
+    "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+/* link styling inside message bubbles */
+.bubble a {
+  color: #0066cc;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.bubble a:hover {
+  text-decoration: underline;
+}
+
+.bubble a::after {
+  content: " 🔗";
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+/* legacy selectors kept for backwards compatibility */
+.msg {
+  margin-bottom: 14px;
+}
 .msg.user {
   color: #000;
 }
-
 .msg.ai {
   color: #666666;
 }
